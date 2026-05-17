@@ -5,15 +5,14 @@ pipeline {
         stage('Get Code') {
             steps {
                 // Obtener código del repo
-                git 'https://github.com/anieto-unir/helloworld.git'
-            }
+                git 'https://github.com/DanielUNIR2026/CP1.git'
         }
 
     stage('Build') {
         steps {
             echo 'Eyyyy, esto es Python. No hay que compilar nada!!!'
 	    echo WORKSPACE
-	    bat 'dir'
+	    sh 'ls'
         }
     }
 
@@ -24,9 +23,9 @@ pipeline {
             stage('Unit') {
                 steps {
                     catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
-                        bat '''
-                                set PYTHONPATH=%WORKSPACE%
-                                pytest --junitxml=result-unit.xml test\\unit
+                        sh '''
+                                export PYTHONPATH='/Users/dani/elRepo'
+                                pytest --junitxml=result-unit.xml test//unit
                         '''
                     }
                 }
@@ -34,13 +33,13 @@ pipeline {
             
             stage('Rest') {
                 steps {
-                    bat '''
-                        set FLASK_APP=app\\api.py
-                        set FLASK_ENV=development
-                        start flask run
-                        start java -jar C:\\Unir\\Ejercicios\\wiremock\\wiremock-jre8-standalone-2.28.0.jar --port 9090 --root-dir test\\wiremock
-                        set PYTHONPATH=%WORKSPACE%
-                        pytest --junitxml=result-rest.xml test\\rest
+                    sh '''
+                        export FLASK_APP=app//api.py
+                        export FLASK_ENV=development
+                        flask run
+                         java -jar C://Unir//Ejercicios//wiremock//wiremock-jre8-standalone-2.28.0.jar --port 9090 --root-dir test//wiremock
+                        export PYTHONPATH=%WORKSPACE%
+                        pytest --junitxml=result-rest.xml test//rest
                     '''
                 }    
             }    
