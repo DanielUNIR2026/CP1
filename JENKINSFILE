@@ -1,7 +1,6 @@
 def PYTHON = '/Library/Frameworks/Python.framework/Versions/3.14/bin/python3.14'
 
 pipeline {
-    //tengo el python instalado mediante el instalador de python del sitio web
     agent any
     stages {
         stage('Get Code') {
@@ -9,42 +8,150 @@ pipeline {
                 git 'https://github.com/DanielUNIR2026/CP1.git'
             }
         }
-        stage('Build') {
-            steps {
-                echo 'Eyyyy, esto es Python. No hay que compilar nada!!!'
-                echo WORKSPACE
-                sh 'ls'
-            }
-        }
+
         stage('Tests') {
             parallel {
                 stage('Unit') {
                     steps {
-                        catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
-                            sh """
-                                export PYTHONPATH=${WORKSPACE}
-                                ${PYTHON} -m pytest --junitxml=result-unit.xml test/unit
-                            """
+                        // Sin baremo: siempre verde. Solo se ejecuta aquí, nunca más.
+                        sh """
+                            export PYTHONPATH=${WORKSPACE}
+                            ${PYTHON} -m pytest --junitxml=result-unit.xml test/unit
+                        """
+                    }
+                    post {
+                        always {
+                            stash name: 'result-unit', includes: 'result-unit.xml'
                         }
                     }
                 }
                 stage('Rest') {
                     steps {
-                        sh """
-                            export FLASK_APP=app/api.py
-                            export FLASK_ENV=development
-                            export PYTHONPATH=${WORKSPACE}
-                            ${PYTHON} -m flask run &
-                            java -jar /Users/dani/Downloads/wiremock-standalone-3.13.2.jar --port 9090 --root-dir test/wiremock &
-                            sleep 8
-                            ${PYTHON} -m pytest --junitxml=result-rest.xml test/rest
-                        """
+                        // Sin baremo: siempre verde aunque falle.
+                        catchError(buildResult: 'SUCCESS', stageResult: 'SUCCESS') {
+                            sh """
+                                export FLASK_APP=app/api.py
+                                export FLASK_ENV=development
+                                export PYTHONPATH=${WORKSPACE}
+                                ${PYTHON} -m flask run &
+                                java -jar /Users/dani/Downloads/wiremock-standalone-3.13.2.jar --port 9090 --root-dir test/wiremock &
+                                sleep 8
+                                ${PYTHON} -m pytest --junitxml=result-rest.xml test/rest
+                            """
+                        }
+                    }
+                    post {
+                        always {
+                            stash name: 'result-rest', includes: 'result-rest.xml'
+                        }
                     }
                 }
             }
         }
+
+        stage('Coverage') {
+            steps {
+                // catchError para que continúe sea cual sea el resultado
+                catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
+                    sh """
+                        export PYTHONPATH=${WORKSPACE}
+                        ${PYTHON} -m coverage run --source=app --omit=app/__init__.py -m pytest test/unit test/rest
+                        ${PYTHON} -m coverage xml -o coverage.xml
+                    """
+                }
+            }
+            post {
+                always {
+                    stash name: 'coverage', includes: 'coverage.xml'
+
+                    // Baremo líneas:    <85 → rojo, 85-95 → unstable, >95 → verde
+                    // Baremo ramas:     <80 → rojo, 80-90 → unstable, >90 → verde
+                    recordCoverage(
+                        tools: [[parser: 'COBERTURA', pattern: 'coverage.xml']],
+                        qualityGates: [
+                            [threshold: 95.0, metric: 'LINE',   baseline: 'PROJECT', criticality: 'NOTE'],
+                            [threshold: 85.0, metric: 'LINE',   baseline: 'PROJECT', criticality: 'UNSTABLE'],
+                            [threshold: 90.0, metric: 'BRANCH', baseline: 'PROJECT', criticality: 'NOTE'],
+                            [threshold: 80.0, metric: 'BRANCH', baseline: 'PROJECT', criticality: 'UNSTABLE']
+                        ]
+                    )
+                }
+            }
+        }
+
+        stage('Static') {
+            steps {
+                sh """
+                    ${PYTHON} -m flake8 --format=pylint --exit-zero app > flake8.xml
+                """
+            }
+            post {
+                always {
+                    stash name: 'flake8', includes: 'flake8.xml'
+
+                    // Baremo: >=8 → UNSTABLE, >=10 → FAILURE. Pipeline continúa siempre.
+                    recordIssues(
+                        tools: [flake8(pattern: 'flake8.xml')],
+                        qualityGates: [
+                            [threshold: 8,  type: 'TOTAL', unstable: true],
+                            [threshold: 10, type: 'TOTAL', unstable: false]
+                        ]
+                    )
+                }
+            }
+        }
+
+        stage('Security Test') {
+            steps {
+                // catchError para que continúe sea cual sea el resultado
+                catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
+                    sh """
+                        ${PYTHON} -m bandit -r app -f xml -o bandit.xml -ll -ii
+                    """
+                }
+            }
+            post {
+                always {
+                    stash name: 'bandit', includes: 'bandit.xml'
+
+                    // Baremo: >=2 → UNSTABLE, >=4 → FAILURE. Pipeline continúa siempre.
+                    recordIssues(
+                        tools: [pyLint(pattern: 'bandit.xml')],
+                        qualityGates: [
+                            [threshold: 2, type: 'TOTAL', unstable: true],
+                            [threshold: 4, type: 'TOTAL', unstable: false]
+                        ]
+                    )
+                }
+            }
+        }
+
+        stage('Performance') {
+            steps {
+                // Flask debe estar levantado para que JMeter pueda atacar suma y resta.
+                // Wiremock NO es necesario en esta etapa.
+                catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
+                    sh """
+                        export FLASK_APP=app/api.py
+                        export PYTHONPATH=${WORKSPACE}
+                        ${PYTHON} -m flask run &
+                        sleep 5
+                        jmeter -n -t test/jmeter/flask_test.jmx -l jmeter-result.jtl
+                    """
+                }
+            }
+            post {
+                always {
+                    stash name: 'jmeter', includes: 'jmeter-result.jtl'
+                    perfReport sourceDataFiles: 'jmeter-result.jtl'
+                }
+            }
+        }
+
         stage('Results') {
             steps {
+                unstash 'result-unit'
+                unstash 'result-rest'
                 junit 'result*.xml'
             }
         }
